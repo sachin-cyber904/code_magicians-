@@ -1,0 +1,50 @@
+    <style>
+    .stApp {
+        background: linear-gradient(135deg, #e6f0ff 0%, #f0f7ff 50%, #e6f0ff 100%) !important;
+    }
+    .st-bb, .stDataFrame, .stAlert, .stTextInput, .stTextArea, .stNumberInput, .stSelectbox {
+        background: rgba(255, 255, 255, 0.8) !important;
+        backdrop-filter: blur(10px) !important;
+        border-radius: 10px !important;
+        box-shadow: 0 2px 8px rgba(37, 99, 235, 0.1) !important;
+        color: #2563eb !important;
+    }
+    h1, h2, h3, h4, h5, h6 { color: #2563eb !important; }
+    .stButton>button, .stDownloadButton>button {
+        background-color: #2563eb !important;
+        color: #fff !important;
+        border-radius: 6px !important;
+        font-weight: 500;
+    }
+    .stCaption, .stInfo, .stSuccess, .stWarning, .stError, .stAlert, .stMarkdown, .stText, .stDataFrame, .stTable, .stTextInput, .stTextArea, .stNumberInput, .stSelectbox {
+        color: #2563eb !important;
+    }
+    .stMarkdown p, .stText, .stDataFrame, .stTable {
+        color: #2563eb !important;
+    }
+    /* Enhanced File uploader */
+    .stFileUploader {
+        background: #eaf2ff !important;
+        border-radius: 16px !important;
+        box-shadow: 0 4px 16px rgba(37, 99, 235, 0.1) !important;
+        border: 2px solid rgba(37, 99, 235, 0.2) !important;
+        padding: 1.2em 1em 1.2em 1em !important;
+        color: #2563eb !important;
+        margin-bottom: 1.5em !important;
+        backdrop-filter: blur(10px) !important;
+    }
+    .stFileUploader label, .stFileUploader div, .stFileUploader span {
+        background: transparent !important;
+        color: #2563eb !important;
+    }
+    .stFileUploader button {
+        background-color: #2563eb !important;
+        color: #fff !important;
+        font-weight: 600;
+        border-radius: 8px !important;
+        box-shadow: 0 2px 8px rgba(37, 99, 235, 0.2) !important;
+        border: none !important;
+        padding: 0.5em 1.2em !important;
+        margin-top: 0.5em !important;
+    }
+    </style>
