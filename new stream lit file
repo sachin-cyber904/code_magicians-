@@ -1,3 +1,7 @@
+import os
+
+# Set Streamlit to use a directory the user can write to
+os.environ["STREAMLIT_HOME"] = os.path.expanduser("~/.streamlit")
 import streamlit as st
 import numpy as np
 import cv2
