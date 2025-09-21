@@ -1,7 +1,26 @@
-import os
+"""
+Streamlit OMR Evaluation & Scoring System
+Features:
+- Two sections in the UI:
+  1) Upload Answer Key (CSV or JSON) or manually input answers
+  2) Upload one or more answered OMR sheet images (JPG/PNG)
+- Detects the OMR sheet region, warps perspective, thresholds and finds filled bubbles
+- Grades the sheet against the answer key and returns per-question and per-subject scores
+Limitations & notes:
+- This is a generic, template-based solution. You should adapt bubble-grid coordinates (rows/cols) to match your printed OMR template for highest accuracy.
 
-# Set Streamlit to use a directory the user can write to
-os.environ["STREAMLIT_HOME"] = os.path.expanduser("~/.streamlit")
+Run:
+  pip install -r requirements.txt
+  streamlit run streamlit_omr_app.py
+
+Requirements (put in requirements.txt):
+streamlit
+numpy
+opencv-python
+pandas
+Pillow
+"""
+
 import streamlit as st
 import numpy as np
 import cv2
@@ -9,6 +28,7 @@ from PIL import Image
 import pandas as pd
 import io
 import json
+import datetime
 
 # ---------- Helper functions ----------
 
@@ -91,12 +111,23 @@ def four_point_transform(image, pts):
     warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
     return warped
 
-def detect_marked_bubbles(image, x, y, w, h, threshold=0.4):
-    """Helper function to detect if a bubble is marked with adjustable threshold."""
+def sharpen_image(image):
+    """Apply sharpening to enhance blurry images."""
+    kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
+    sharpened = cv2.filter2D(image, -1, kernel)
+    return sharpened
+
+def detect_marked_bubbles(image, x, y, w, h, threshold=0.25):
+    """Helper function to detect if a bubble is marked with adjustable threshold and validation."""
     roi = image[y:y+h, x:x+w]
     total_pixels = roi.shape[0] * roi.shape[1]
     filled_pixels = cv2.countNonZero(roi)
-    return filled_pixels / total_pixels > threshold
+    confidence = filled_pixels / total_pixels
+    
+    # Secondary validation: Check minimum fill
+    if confidence > threshold and filled_pixels > total_pixels * 0.10:  # Reduced to 10%
+        return True
+    return False
 
 def grade_sheet(warped_gray, answer_key, questions=100, choices=4, subjects=5, layout=None):
     """
@@ -105,25 +136,31 @@ def grade_sheet(warped_gray, answer_key, questions=100, choices=4, subjects=5, l
     - 20 questions per subject vertically
     - A,B,C,D choices for each question
     """
-    # Enhanced preprocessing for better bubble detection
-    # Denoise with bilateral filter and apply contrast adjustment
-    denoised = cv2.bilateralFilter(warped_gray, 9, 75, 75)
-    # Adjust contrast to make filled bubbles stand out
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    contrasted = clahe.apply(denoised)
-    # Adaptive threshold for varying lighting conditions
-    thresh = cv2.adaptiveThreshold(contrasted, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                  cv2.THRESH_BINARY_INV, 11, 2)
+    # Sharpen the image to handle blur
+    sharpened = sharpen_image(warped_gray)
     
-    # Create debug image
+    # Enhanced preprocessing for better bubble detection
+    denoised = cv2.bilateralFilter(sharpened, 9, 75, 75)
+    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(8,8))  # Increased clip limit
+    contrasted = clahe.apply(denoised)
+    thresh = cv2.adaptiveThreshold(contrasted, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                  cv2.THRESH_BINARY_INV, 11, 2)  # Adjusted for sensitivity
+    
+    # Apply morphology to fill gaps in bubbles
+    kernel = np.ones((5,5), np.uint8)
+    thresh = cv2.dilate(thresh, kernel, iterations=1)
+    thresh = cv2.erode(thresh, kernel, iterations=1)
+    
+    # Create debug image and confidence heatmap
     debug_img = cv2.cvtColor(warped_gray.copy(), cv2.COLOR_GRAY2BGR)
+    heatmap = np.zeros((thresh.shape[0], thresh.shape[1], 3), dtype=np.uint8)
     
     # Get image dimensions
     h, w = thresh.shape
     
     # Calculate grid parameters (adjusted for header and footer space)
-    header_offset = int(h * 0.15)  # Reduced header offset to 15%
-    footer_offset = int(h * 0.05)  # Add small footer offset
+    header_offset = int(h * 0.10)
+    footer_offset = int(h * 0.05)
     usable_h = h - header_offset - footer_offset
     questions_per_subject = questions // subjects
     subject_width = w // subjects
@@ -147,105 +184,9 @@ def grade_sheet(warped_gray, answer_key, questions=100, choices=4, subjects=5, l
                 x = subject_x + (choice * choice_width)
                 y = question_y
                 
-                # Define bubble region with tighter padding
-                bubble_w = int(choice_width * 0.5)  # Reduced to 50% for precision
-                bubble_h = int(row_height * 0.5)
-                bubble_x = x + (choice_width - bubble_w) // 2
-                bubble_y = y + (row_height - bubble_h) // 2
-                
-                # Ensure bounds
-                bubble_x = max(0, min(bubble_x, w - bubble_w))
-                bubble_y = max(0, min(bubble_y, h - bubble_h))
-                
-                # Check if bubble is marked with adjustable threshold
-                confidence = detect_marked_bubbles(thresh, bubble_x, bubble_y, bubble_w, bubble_h, threshold=0.35)
-                
-                # Draw rectangle for visualization (green if marked, orange if not)
-                color = (0, 255, 0) if confidence else (0, 165, 255)
-                cv2.rectangle(debug_img, 
-                            (bubble_x, bubble_y), 
-                            (bubble_x + bubble_w, bubble_y + bubble_h),
-                            color, 2)
-                cv2.putText(debug_img, chr(ord('A') + choice), (bubble_x, bubble_y - 5), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-                
-                if confidence and confidence > max_confidence:
-                    max_confidence = confidence
-                    marked = chr(ord('A') + choice)
-            
-            # Store result for this question
-            q_num = subject * questions_per_subject + (q + 1)
-            results[q_num] = {
-                'marked': marked,
-                'conf': max_confidence
-            }
-    
-    # Show debug image
-    st.image(cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB), caption='Bubble Detection Debug View', use_container_width=True)
-    
-    # Compute correctness
-    final_results = {}
-    correct = 0
-    for q in range(1, questions+1):
-        ans = answer_key.get(q, None)
-        marked = results.get(q, {'marked': None, 'conf': 0})['marked']
-        is_correct = (ans is not None and marked == ans)
-        if is_correct:
-            correct += 1
-        final_results[q] = {
-            'answer': ans,
-            'marked': marked,
-            'correct': is_correct,
-            'conf': results.get(q, {'conf':0})['conf']
-        }
-    
-    return final_results, correct
-    """
-    Grid-based OMR detection optimized for template with:
-    - 5 subjects side by side
-    - 20 questions per subject vertically
-    - A,B,C,D choices for each question
-    """
-    # Enhanced preprocessing for better bubble detection
-    # Denoise with bilateral filter
-    denoised = cv2.bilateralFilter(warped_gray, 9, 75, 75)
-    # Adaptive threshold for varying lighting
-    thresh = cv2.adaptiveThreshold(denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
-    
-    # Create debug image
-    debug_img = cv2.cvtColor(warped_gray.copy(), cv2.COLOR_GRAY2BGR)
-    
-    # Get image dimensions
-    h, w = thresh.shape
-    
-    # Calculate grid parameters (adjusted for header space ~20% of height)
-    header_offset = int(h * 0.2)  # Skip header
-    usable_h = h - header_offset
-    questions_per_subject = questions // subjects  # 20 questions per subject
-    subject_width = w // subjects
-    row_height = usable_h // questions_per_subject
-    choice_width = subject_width // choices
-    
-    results = {}
-    
-    # Process each subject
-    for subject in range(subjects):
-        subject_x = subject * subject_width
-        
-        # Process each question in this subject
-        for q in range(questions_per_subject):
-            question_y = header_offset + (q * row_height)
-            marked = None
-            max_confidence = 0
-            
-            # Check each choice (A,B,C,D)
-            for choice in range(choices):
-                x = subject_x + (choice * choice_width)
-                y = question_y
-                
-                # Define bubble region with padding
-                bubble_w = int(choice_width * 0.6)  # Reduced for precision
-                bubble_h = int(row_height * 0.6)
+                # Define bubble region with adjusted padding
+                bubble_w = int(choice_width * 0.7)  # Increased to capture more area
+                bubble_h = int(row_height * 0.7)
                 bubble_x = x + (choice_width - bubble_w) // 2
                 bubble_y = y + (row_height - bubble_h) // 2
                 
@@ -254,30 +195,39 @@ def grade_sheet(warped_gray, answer_key, questions=100, choices=4, subjects=5, l
                 bubble_y = max(0, min(bubble_y, h - bubble_h))
                 
                 # Check if bubble is marked
-                confidence = detect_marked_bubbles(thresh, bubble_x, bubble_y, bubble_w, bubble_h)
+                roi = thresh[bubble_y:bubble_y+bubble_h, bubble_x:bubble_x+bubble_w]
+                total_pixels = roi.shape[0] * roi.shape[1]
+                filled_pixels = cv2.countNonZero(roi)
+                confidence = filled_pixels / total_pixels
                 
-                # Draw rectangle for visualization (green if marked, orange if not)
-                color = (0, 255, 0) if confidence else (0, 165, 255)
+                # Draw confidence heatmap
+                heatmap_intensity = int(min(255, confidence * 255))
+                cv2.rectangle(heatmap, (bubble_x, bubble_y), (bubble_x + bubble_w, bubble_y + bubble_h),
+                              (0, 0, heatmap_intensity), -1)
+                
+                # Draw rectangle for visualization
+                color = (0, 255, 0) if detect_marked_bubbles(thresh, bubble_x, bubble_y, bubble_w, bubble_h) else (0, 165, 255)
                 cv2.rectangle(debug_img, 
-                            (bubble_x, bubble_y), 
-                            (bubble_x + bubble_w, bubble_y + bubble_h),
-                            color, 2)
-                # Label choices
-                cv2.putText(debug_img, chr(ord('A') + choice), (bubble_x, bubble_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                              (bubble_x, bubble_y), 
+                              (bubble_x + bubble_w, bubble_y + bubble_h),
+                              color, 2)
+                cv2.putText(debug_img, chr(ord('A') + choice), (bubble_x, bubble_y - 5), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
                 
-                if confidence and confidence > max_confidence:
+                if detect_marked_bubbles(thresh, bubble_x, bubble_y, bubble_w, bubble_h) and confidence > max_confidence:
                     max_confidence = confidence
                     marked = chr(ord('A') + choice)
             
             # Store result for this question
             q_num = subject * questions_per_subject + (q + 1)
             results[q_num] = {
-                'marked': marked,
+                'marked': marked if marked else None,
                 'conf': max_confidence
             }
     
-    # Show debug image
+    # Show debug image and confidence heatmap
     st.image(cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB), caption='Bubble Detection Debug View', use_container_width=True)
+    st.image(heatmap, caption='Confidence Heatmap (Blue = Low, Red = High)', use_container_width=True, channels="BGR")
     
     # Compute correctness
     final_results = {}
@@ -300,6 +250,10 @@ def grade_sheet(warped_gray, answer_key, questions=100, choices=4, subjects=5, l
 # ---------- Streamlit UI ----------
 
 st.set_page_config(page_title='OMR Evaluation System', layout='centered')
+
+# Set current date and time
+current_time = datetime.datetime.now().strftime("%I:%M %p IST on %B %d, %Y")
+st.write(f"Current Date and Time: {current_time}")
 
 # Engaging and user-friendly color theme with CSS
 st.markdown('''
@@ -423,7 +377,7 @@ if uploaded and answer_key:
         # show warped preview
         st.image(cv2.cvtColor(warped, cv2.COLOR_BGR2RGB), caption='Detected / Warped Sheet Preview', use_container_width=True)
 
-        # grade (pass subjects) - using grid-based detection for precise recognition
+        # grade (pass subjects)
         results, correct = grade_sheet(warped_gray, answer_key, questions=int(questions), choices=int(choices), subjects=int(subjects))
         score = correct
         st.write(f'**Total Correct:** {correct} / {questions}   |   **Score (raw):** {score}')
@@ -459,7 +413,7 @@ else:
 
 st.markdown('---')
 st.write('Template tuning tips:')
-st.write('- If the bubble detection misses marks, adjust the threshold in detect_marked_bubbles or grid parameters in grade_sheet.')
-st.write('- Debugging: Use the Bubble Detection Debug image to tune parameters.')
+st.write('- If no bubbles are detected, check the "Confidence Heatmap" and adjust the threshold (0.25) or grid parameters.')
+st.write('- Debugging: Use the debug views to verify bubble alignment and adjust `header_offset`, `row_height`, or `choice_width` if needed.')
 
 # EOF
